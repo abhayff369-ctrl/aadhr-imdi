@@ -1,278 +1,307 @@
 # aadhr-imdi/api/index.py
 # Developer: Abhay Singh
-# Updated with multiple bypass techniques for direct requests
+# VERSION 6.0 - Multiple Tokens Added
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Header
 from fastapi.responses import JSONResponse
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import requests
 from bs4 import BeautifulSoup
 import re
 import time
-import urllib.parse
+import json
+import random
+import os
 
-app = FastAPI(title="Aadhar Ration Scraper API", owner="Abhay Singh", version="4.0")
+app = FastAPI(title="Aadhar Ration Scraper API", owner="Abhay Singh", version="6.0")
 
-# ========== API KEYS ==========
+# ========== MULTIPLE TOKENS / API KEYS ==========
+# All tokens that users can use
 VALID_API_KEYS = [
+    # Original 5 keys
     "XERO-DEEPSEEK-KEY-001",
     "ABHAY-SINGH-MASTER-002", 
     "RATION-SCRAPER-003",
     "OSINT-PRO-004",
-    "DEV-STRESS-TEST-005"
+    "DEV-STRESS-TEST-005",
+    
+    # Additional tokens (jo aapne diye)
+    "DEMO-TOKEN-001",
+    "TEST-USER-002",
+    "PREMIUM-KEY-003",
+    "BASIC-ACCESS-004",
+    "VIP-TOKEN-005",
+    "FREE-TIER-006",
+    "TRIAL-KEY-007",
+    "MONTHLY-SUB-008",
+    "YEARLY-PLAN-009",
+    "LIFETIME-ACCESS-010",
+    
+    # More tokens for users
+    "USER-ABCD-1234",
+    "USER-EFGH-5678",
+    "USER-IJKL-9012",
+    "API-KEY-ABCDEF",
+    "SECRET-TOKEN-12345",
+    "BEARER-TOKEN-67890",
+    "ACCESS-KEY-2024",
+    "AUTH-TOKEN-2025",
+    "RATION-API-001",
+    "SCRAPER-KEY-002",
+    
+    # Developer specific
+    "ABHAY-DEV-KEY",
+    "XERO-MASTER-KEY",
+    "DEEPSEEK-ADMIN",
+    "RATION-PRO-KEY",
+    "OSINT-MASTER-TOKEN",
 ]
-MASTER_API_KEY = "ABHAY-SINGH-ADMIN-MASTER"
-DEMO_KEY = "demo"
 
-def verify_api_key(key: Optional[str] = None) -> bool:
-    if key is None:
+# Admin keys
+MASTER_API_KEYS = [
+    "ABHAY-SINGH-ADMIN-MASTER",
+    "XERO-ADMIN-SECRET",
+    "DEEPSEEK-ROOT-ACCESS"
+]
+
+# Demo/public keys (rate limited)
+DEMO_KEYS = [
+    "demo",
+    "public",
+    "guest",
+    "test123",
+    "freeuser"
+]
+
+def verify_api_key(key: Optional[str] = None) -> tuple:
+    """
+    Verify API key
+    Returns (is_valid, key_type, message)
+    """
+    if not key:
+        return (False, None, "No API key provided")
+    
+    if key in VALID_API_KEYS:
+        return (True, "valid", "Access granted")
+    
+    if key in MASTER_API_KEYS:
+        return (True, "master", "Admin access granted")
+    
+    if key in DEMO_KEYS:
+        return (True, "demo", "Demo access granted (rate limited)")
+    
+    return (False, None, "Invalid API key")
+
+def get_key_info(key: str) -> Dict:
+    """Get information about an API key"""
+    if key in MASTER_API_KEYS:
+        return {"type": "master", "permissions": ["admin", "full", "keys_list"]}
+    elif key in VALID_API_KEYS:
+        return {"type": "premium", "permissions": ["search", "bulk", "advanced"]}
+    elif key in DEMO_KEYS:
+        return {"type": "demo", "permissions": ["search", "rate_limited"], "limit": 10}
+    else:
+        return {"type": "invalid", "permissions": []}
+
+# ========== RATE LIMITING FOR DEMO KEYS ==========
+rate_limits = {}
+
+def check_rate_limit(key: str) -> bool:
+    """Check if demo key has exceeded rate limit"""
+    if key not in DEMO_KEYS:
+        return True  # No limit for premium/master keys
+    
+    now = time.time()
+    hour_ago = now - 3600
+    
+    if key not in rate_limits:
+        rate_limits[key] = []
+    
+    # Clean old requests
+    rate_limits[key] = [t for t in rate_limits[key] if t > hour_ago]
+    
+    # Demo keys: max 10 requests per hour
+    if len(rate_limits[key]) >= 10:
         return False
-    return key in VALID_API_KEYS or key == MASTER_API_KEY or key == DEMO_KEY
+    
+    return True
 
-# ========== ADVANCED SESSION WITH BYPASS TECHNIQUES ==========
-class BypassSession:
-    """Session handler with multiple bypass techniques"""
-    
-    def __init__(self):
-        self.session = requests.Session()
-        self.update_headers()
-    
-    def update_headers(self, additional_headers=None):
-        """Set headers to mimic real browser"""
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Cache-Control": "max-age=0"
-        }
-        if additional_headers:
-            headers.update(additional_headers)
-        self.session.headers.update(headers)
-    
-    def try_multiple_methods(self, url: str, params: dict, data: dict) -> tuple:
-        """
-        Try multiple HTTP methods to bypass restrictions
-        Returns (response, method_used)
-        """
-        methods_to_try = []
-        
-        # Method 1: Normal POST with data
-        methods_to_try.append(("POST (normal)", lambda: self.session.post(url, data=data, timeout=15)))
-        
-        # Method 2: POST with params in URL
-        methods_to_try.append(("POST (params in URL)", lambda: self.session.post(url, params=params, data=data, timeout=15)))
-        
-        # Method 3: GET with params
-        methods_to_try.append(("GET (params)", lambda: self.session.get(url, params={**params, **data}, timeout=15)))
-        
-        # Method 4: POST with different content-type
-        methods_to_try.append(("POST (JSON)", lambda: self.session.post(url, json={**params, **data}, timeout=15)))
-        
-        # Method 5: GET with everything in URL
-        combined = {**params, **data}
-        methods_to_try.append(("GET (combined)", lambda: self.session.get(f"{url}?{urllib.parse.urlencode(combined)}", timeout=15)))
-        
-        for method_name, method_call in methods_to_try:
-            try:
-                response = method_call()
-                if response.status_code == 200:
-                    return response, method_name
-            except:
-                continue
-        
-        return None, None
+def add_rate_limit(key: str):
+    """Add a request to rate limit tracking"""
+    if key in DEMO_KEYS:
+        if key not in rate_limits:
+            rate_limits[key] = []
+        rate_limits[key].append(time.time())
 
-# ========== IMPROVED SCRAPING FUNCTION ==========
-def scrape_ration_by_aadhar(aadhar_number: str) -> Dict[str, Any]:
-    """
-    Enhanced scraping with multiple bypass techniques
-    """
-    aadhar_clean = re.sub(r'\D', '', aadhar_number)
+# ========== USER AGENT ROTATION ==========
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
+    "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 Chrome/119.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/119.0",
+    "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
+]
+
+def get_random_headers():
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
+# ========== SCRAPING FUNCTION ==========
+def scrape_ration_by_aadhar(aadhar: str, key_type: str = "valid") -> Dict[str, Any]:
+    """Scrape ration card details"""
+    
+    aadhar_clean = re.sub(r'\D', '', aadhar)
     if len(aadhar_clean) != 12:
-        return {"error": f"Invalid Aadhar: must be 12 digits", "aadhar": aadhar_number}
+        return {
+            "success": False,
+            "error": "Invalid Aadhar number",
+            "aadhar": aadhar,
+            "message": "Aadhar must be exactly 12 digits"
+        }
     
-    base_url = "https://impds.nic.in/impdsdeduplication"
-    
-    # Multiple endpoint patterns to try
-    endpoint_variants = [
-        f"{base_url}/searchRationByAadhar",
-        f"{base_url}/getRationDetails",
-        f"{base_url}/aadharSearch",
-        f"{base_url}/search",
-        f"{base_url}/api/search",
-        f"{base_url}/ration/search",
-        f"{base_url}/public/search",
-        f"{base_url}/aadhar/{aadhar_clean}",
-        f"{base_url}/ration/aadhar/{aadhar_clean}",
-        f"{base_url}/api/v1/search?aadhar={aadhar_clean}",
-        f"{base_url}/getDetails",
-        f"{base_url}/fetchData",
+    # List of URLs to try
+    urls_to_try = [
+        ("https://impds.nic.in/impdsdeduplication/searchRationByAadhar", "POST"),
+        ("https://impds.nic.in/impdsdeduplication/getRationDetails", "POST"),
+        ("https://impds.nic.in/impdsdeduplication/aadharSearch", "POST"),
+        ("https://impds.nic.in/impdsdeduplication/search", "POST"),
+        (f"https://impds.nic.in/impdsdeduplication/searchRationByAadhar?adhar={aadhar_clean}", "GET"),
+        (f"https://impds.nic.in/impdsdeduplication/getDetails?uid={aadhar_clean}", "GET"),
     ]
     
-    # Parameter patterns to try
-    param_variants = [
+    # Parameter combinations
+    param_combinations = [
         {"aadharNumber": aadhar_clean},
         {"aadhar": aadhar_clean},
-        {"aadhar_card": aadhar_clean},
         {"uid": aadhar_clean},
         {"aadhaar": aadhar_clean},
         {"adhar": aadhar_clean},
         {"aadhar_no": aadhar_clean},
         {"number": aadhar_clean},
-        {"id": aadhar_clean},
         {"search": aadhar_clean},
-        {"query": aadhar_clean},
         {"value": aadhar_clean},
+        {"aadhar_card": aadhar_clean},
     ]
     
-    # CSRF token patterns to try (including bypass attempts)
-    csrf_values = [
-        None,  # No token
-        "",    # Empty token
-        "test", # Dummy token
-        "dummy", # Another dummy
-        "abc123", # Random
-    ]
-    
-    # Try all combinations
-    for endpoint in endpoint_variants:
-        for params in param_variants:
-            for csrf_val in csrf_values:
-                try:
-                    # Create session for this attempt
-                    bs = BypassSession()
-                    
-                    # Prepare data with CSRF
-                    data = dict(params)
-                    if csrf_val is not None:
-                        for csrf_name in ['csrf_token', '_token', 'csrfmiddlewaretoken', 'authenticity_token', 'csrf']:
-                            data[csrf_name] = csrf_val
-                    
-                    # Try multiple HTTP methods
-                    response, method_used = bs.try_multiple_methods(endpoint, {}, data)
-                    
-                    if response and response.status_code == 200:
-                        # Check if response contains valid data
-                        soup = BeautifulSoup(response.text, 'html.parser')
-                        
-                        # Look for ration card data patterns
-                        if is_valid_response(response.text, aadhar_clean):
-                            return parse_response(response.text, aadhar_clean, endpoint, method_used)
+    for url, method in urls_to_try:
+        for params in param_combinations:
+            try:
+                session = requests.Session()
+                session.headers.update(get_random_headers())
+                
+                response = None
+                
+                if method == "POST":
+                    response = session.post(url, data=params, timeout=15, allow_redirects=True)
+                else:
+                    response = session.get(url, timeout=15, allow_redirects=True)
+                
+                if response and response.status_code == 200:
+                    if is_valid_response(response.text, aadhar_clean):
+                        parsed = parse_response(response.text, aadhar_clean)
+                        if parsed.get("found", False):
+                            parsed["success"] = True
+                            parsed["key_type_used"] = key_type
+                            return parsed
                             
-                except Exception as e:
-                    continue
+            except Exception:
+                continue
     
     return {
-        "error": "No data found after trying all endpoints and methods",
+        "success": False,
         "aadhar": aadhar_clean,
-        "tried_endpoints": len(endpoint_variants),
-        "tried_param_patterns": len(param_variants),
-        "message": "impds.nic.in may be down or Aadhar not registered"
+        "error": "No data found",
+        "message": "Aadhar not registered or website is down",
+        "key_type_used": key_type
     }
 
 def is_valid_response(html: str, aadhar: str) -> bool:
-    """Check if response contains actual data (not error page)"""
-    negative_patterns = [
-        'not found', 'invalid', 'no record', 'error 404', 'access denied',
-        'login required', 'session expired', 'unauthorized', 'forbidden'
-    ]
-    
     html_lower = html.lower()
     
-    # If any negative pattern and no positive indicators
-    for pattern in negative_patterns:
-        if pattern in html_lower:
+    error_keywords = ['not found', 'invalid', 'no record', 'error', 'access denied',
+                      'login required', 'session expired', 'unauthorized', 'forbidden']
+    
+    for keyword in error_keywords:
+        if keyword in html_lower:
             return False
     
-    # Positive indicators
-    positive_patterns = [
-        'ration', 'card', 'family', 'member', 'aadhar', aadhar,
-        'table', 'td', 'name', 'father', 'mother'
-    ]
+    valid_indicators = ['ration', 'card', 'family', 'member', 'name', 'father', 
+                        'mother', 'aadhar', 'uid', 'beneficiary', 'bpl', 'apl']
     
-    for pattern in positive_patterns:
-        if pattern in html_lower:
+    for indicator in valid_indicators:
+        if indicator in html_lower:
             return True
     
-    return False
+    return aadhar in html
 
-def parse_response(html: str, aadhar: str, endpoint: str, method: str) -> Dict[str, Any]:
-    """Parse HTML response to extract ration card data"""
+def parse_response(html: str, aadhar: str) -> Dict[str, Any]:
     soup = BeautifulSoup(html, 'html.parser')
     
     result = {
+        "found": False,
         "aadhar": aadhar,
         "ration_card_number": None,
         "card_type": None,
         "family_members": [],
+        "entitlements": {},
         "status": None,
-        "source_endpoint": endpoint,
-        "method_used": method,
         "scraped_at": time.time(),
         "developer": "Abhay Singh"
     }
     
-    # Extract ration card number - multiple patterns
+    # Extract ration card number
     patterns = [
-        r'ration[_\s]?card[_\s]?[a-z]*[:\s]*([A-Z0-9/]+)',
+        r'ration[_\s]?card[_\s]?[no#]*[:\s]*([A-Z0-9/]+)',
         r'card[_\s]?no[:\s]*([A-Z0-9/]+)',
         r'ration[_\s]?id[:\s]*([A-Z0-9/]+)',
-        r'card[_\s]?number[:\s]*([A-Z0-9/]+)'
     ]
     
     for pattern in patterns:
         match = re.search(pattern, html, re.I)
         if match:
-            result["ration_card_number"] = match.group(1)
+            result["ration_card_number"] = match.group(1).strip()
+            result["found"] = True
             break
     
-    # If not found via regex, try HTML selectors
-    if not result["ration_card_number"]:
-        selectors = [
-            '.ration-card-number', '.card-number', '#rationCardNo',
-            '.rationNo', '.card_no', 'span.ration-number',
-            'td:contains("Card No") + td', 'td:contains("Ration Card") + td'
-        ]
-        for selector in selectors:
-            elem = soup.select_one(selector)
-            if elem and elem.text.strip():
-                result["ration_card_number"] = elem.text.strip()
-                break
-    
-    # Extract family members
+    # Extract family members from tables
     tables = soup.find_all('table')
     for table in tables:
         rows = table.find_all('tr')
-        for row in rows[1:15]:
+        for row in rows:
             cols = row.find_all('td')
             if len(cols) >= 2:
                 member = {}
-                for i, col in enumerate(cols):
+                for i, col in enumerate(cols[:3]):
                     text = col.text.strip()
-                    if i == 0 or 'name' in str(col).lower():
+                    if i == 0:
                         member['name'] = text
-                    elif i == 1 or 'relation' in str(col).lower():
+                    elif i == 1:
                         member['relation'] = text
-                    elif i == 2 or 'age' in str(col).lower():
+                    elif i == 2:
                         member['age'] = text
-                if member.get('name') or member.get('relation'):
+                
+                if member.get('name') and member.get('relation'):
                     result["family_members"].append(member)
-        
-        if result["family_members"]:
-            break
+                    result["found"] = True
     
     # Extract status
-    status_keywords = ['active', 'inactive', 'suspended', 'valid', 'expired']
-    for keyword in status_keywords:
-        if keyword in html.lower():
-            result["status"] = keyword.title()
-            break
+    html_lower = html.lower()
+    if 'active' in html_lower:
+        result["status"] = "Active"
+    elif 'inactive' in html_lower:
+        result["status"] = "Inactive"
+    elif 'bpl' in html_lower:
+        result["status"] = "BPL"
+    elif 'apl' in html_lower:
+        result["status"] = "APL"
     
     return result
 
@@ -283,193 +312,254 @@ def root():
     return {
         "name": "Aadhar Ration Scraper API",
         "developer": "Abhay Singh",
-        "version": "4.0",
-        "features": [
-            "Multi-endpoint scanning",
-            "Multi-parameter testing", 
-            "CSRF bypass attempts",
-            "Multiple HTTP methods",
-            "Automatic response validation"
-        ],
+        "version": "6.0",
+        "status": "Multiple Tokens Added",
+        "total_keys": len(VALID_API_KEYS) + len(MASTER_API_KEYS) + len(DEMO_KEYS),
         "authentication": {
             "method": "Query Parameter",
             "parameter": "key",
-            "example": "?aadhar=123456789012&key=demo",
-            "demo_key": "demo"
+            "example": "?aadhar=123456789012&key=YOUR_TOKEN",
+            "key_types": ["premium (40+ keys)", "master (3 keys)", "demo (5 keys)"]
         },
-        "endpoints": [
-            {"path": "/", "method": "GET", "description": "API info"},
-            {"path": "/scrape/ration?aadhar=123456789012&key=demo", "method": "GET", "description": "Search single Aadhar"},
-            {"path": "/scrape/bulk?aadhars=123456789012,234567890123&key=demo", "method": "GET", "description": "Bulk search"},
-            {"path": "/scrape/bypass?aadhar=123456789012&key=demo", "method": "GET", "description": "Aggressive bypass search"},
-            {"path": "/keys/list?key=MASTER_KEY", "method": "GET", "description": "List keys"},
-            {"path": "/health", "method": "GET", "description": "Health check"}
-        ]
+        "endpoints": {
+            "/": "API information",
+            "/scrape/ration?aadhar=XXX&key=XXX": "Single Aadhar search",
+            "/scrape/bulk?aadhars=X,Y,Z&key=XXX": "Bulk search (max 20)",
+            "/keys/list?key=MASTER_KEY": "List all available keys",
+            "/keys/info?key=YOUR_KEY": "Get info about your key",
+            "/health": "Health check"
+        }
     }
 
 @app.get("/scrape/ration")
-async def scrape_ration_endpoint(
-    aadhar: str = Query(..., description="12-digit Aadhar number"),
-    key: str = Query(..., description="API Key (use 'demo' for testing)"),
+async def scrape_ration(
+    aadhar: str = Query(..., min_length=10, max_length=12, description="12-digit Aadhar number"),
+    key: str = Query(..., description="Your API key/token"),
     format: str = Query("json", description="json or text")
 ):
-    """Scrape ration card using Aadhar number"""
+    """Search ration card by Aadhar number using your token"""
     
-    if not verify_api_key(key):
+    # Verify API key
+    is_valid, key_type, message = verify_api_key(key)
+    
+    if not is_valid:
         return JSONResponse(
             status_code=401,
-            content={"error": "Invalid API Key", "valid_keys": VALID_API_KEYS, "demo_key": DEMO_KEY}
+            content={
+                "success": False,
+                "error": "Invalid API Key",
+                "message": message,
+                "available_keys_count": len(VALID_API_KEYS),
+                "tip": "Contact Abhay Singh for a valid key"
+            }
         )
     
-    aadhar_clean = re.sub(r'\D', '', str(aadhar))
+    # Check rate limit for demo keys
+    if key_type == "demo" and not check_rate_limit(key):
+        return JSONResponse(
+            status_code=429,
+            content={
+                "success": False,
+                "error": "Rate limit exceeded",
+                "message": "Demo keys limited to 10 requests per hour",
+                "key_type": key_type
+            }
+        )
+    
+    # Clean Aadhar
+    aadhar_clean = re.sub(r'\D', '', aadhar)
+    
     if len(aadhar_clean) != 12:
         return JSONResponse(
             status_code=400,
-            content={"error": "Invalid Aadhar", "received": aadhar, "message": "Must be 12 digits"}
+            content={
+                "success": False,
+                "error": "Invalid Aadhar",
+                "received": aadhar,
+                "message": "Aadhar must be exactly 12 digits"
+            }
         )
     
+    # Add to rate limit
+    add_rate_limit(key)
+    
     try:
-        result = scrape_ration_by_aadhar(aadhar_clean)
+        result = scrape_ration_by_aadhar(aadhar_clean, key_type)
         
         if format == "text":
-            text_out = f"""
-╔══════════════════════════════════════════════════════════════╗
-║              RATION CARD SEARCH RESULT (BYPASS MODE)        ║
-║                    Developer: Abhay Singh                   ║
-╚══════════════════════════════════════════════════════════════╝
+            output = f"""
+╔══════════════════════════════════════════════════════════════════╗
+║              AADHAR RATION CARD SEARCH RESULT                   ║
+║                    Developer: Abhay Singh                       ║
+╚══════════════════════════════════════════════════════════════════╝
 
-AADHAR: {result.get('aadhar', 'N/A')}
-RATION CARD: {result.get('ration_card_number', 'Not Found')}
-CARD TYPE: {result.get('card_type', 'Not Found')}
-STATUS: {result.get('status', 'Unknown')}
+🔑 KEY TYPE       : {key_type.upper()}
+📌 AADHAR NUMBER  : {result.get('aadhar', 'N/A')}
+📋 RATION CARD    : {result.get('ration_card_number', 'Not Found')}
+🏷️  CARD TYPE      : {result.get('card_type', 'Not Found')}
+📊 STATUS         : {result.get('status', 'Unknown')}
+✅ FOUND          : {'Yes' if result.get('found') else 'No'}
 
-METHOD USED: {result.get('method_used', 'N/A')}
-ENDPOINT: {result.get('source_endpoint', 'N/A')}
-
-FAMILY MEMBERS ({len(result.get('family_members', []))}):
 """
-            for m in result.get('family_members', []):
-                text_out += f"  • {m.get('name', '')} - {m.get('relation', '')}\n"
+            if result.get('family_members'):
+                output += f"\n👨‍👩‍👧‍👦 FAMILY MEMBERS ({len(result['family_members'])}):\n"
+                for m in result['family_members']:
+                    output += f"   • {m.get('name', '')} - {m.get('relation', '')}"
+                    if m.get('age'):
+                        output += f" (Age: {m['age']})"
+                    output += "\n"
             
-            return JSONResponse(content={"output": text_out})
+            output += f"\n⏱️  Searched at: {time.ctime(result.get('scraped_at', time.time()))}"
+            
+            if result.get('error'):
+                output += f"\n⚠️  Error: {result['error']}"
+            
+            return JSONResponse(content={"output": output})
         
         return JSONResponse(content=result)
         
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e), "aadhar": aadhar_clean})
-
-@app.get("/scrape/bypass")
-async def aggressive_bypass(
-    aadhar: str = Query(..., description="12-digit Aadhar number"),
-    key: str = Query(..., description="API Key")
-):
-    """
-    Aggressive bypass endpoint - tries EVERY possible combination
-    More thorough but slower
-    """
-    
-    if not verify_api_key(key):
-        return JSONResponse(status_code=401, content={"error": "Invalid API Key"})
-    
-    aadhar_clean = re.sub(r'\D', '', str(aadhar))
-    if len(aadhar_clean) != 12:
-        return JSONResponse(status_code=400, content={"error": "Invalid Aadhar"})
-    
-    # Comprehensive testing
-    all_attempts = []
-    
-    base_urls = [
-        "https://impds.nic.in/impdsdeduplication",
-        "https://impds.nic.in",
-        "http://impds.nic.in:8080/impdsdeduplication",
-    ]
-    
-    endpoints = [
-        "/searchRationByAadhar", "/getRationDetails", "/aadharSearch",
-        "/search", "/api/search", "/public/search", "/rest/search",
-        "/ration", "/aadhar", "/fetch", "/getData", "/query",
-        "/search/aadhar", "/api/v1/search", "/service/search"
-    ]
-    
-    methods = ["POST", "GET", "PUT", "DELETE"]
-    
-    for base in base_urls:
-        for endpoint in endpoints:
-            for method in methods:
-                for use_csrf in [True, False]:
-                    try:
-                        url = f"{base}{endpoint}"
-                        session = requests.Session()
-                        
-                        if method == "GET":
-                            resp = session.get(f"{url}?aadhar={aadhar_clean}&aadharNumber={aadhar_clean}", timeout=10)
-                        else:
-                            data = {"aadhar": aadhar_clean, "aadharNumber": aadhar_clean}
-                            if use_csrf:
-                                data["csrf_token"] = "test"
-                            resp = session.post(url, data=data, timeout=10)
-                        
-                        all_attempts.append({
-                            "url": url,
-                            "method": method,
-                            "status": resp.status_code,
-                            "has_data": is_valid_response(resp.text, aadhar_clean)
-                        })
-                        
-                        if resp.status_code == 200 and is_valid_response(resp.text, aadhar_clean):
-                            return parse_response(resp.text, aadhar_clean, url, method)
-                            
-                    except:
-                        continue
-    
-    return {
-        "aadhar": aadhar_clean,
-        "error": "No working endpoint found",
-        "attempts": len(all_attempts),
-        "sample_attempts": all_attempts[:10]
-    }
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": str(e),
+                "aadhar": aadhar_clean
+            }
+        )
 
 @app.get("/scrape/bulk")
-def scrape_bulk(
-    aadhars: str = Query(..., description="Comma-separated Aadhar numbers"),
-    key: str = Query(..., description="API Key"),
-    delay: float = Query(2.0, description="Delay between requests")
+async def scrape_bulk(
+    aadhars: str = Query(..., description="Comma-separated Aadhar numbers (max 10 for demo)"),
+    key: str = Query(..., description="Your API key"),
+    delay: float = Query(1.0, description="Delay between requests")
 ):
-    """Bulk scrape multiple Aadhar numbers"""
+    """Bulk search multiple Aadhar numbers"""
     
-    if not verify_api_key(key):
+    is_valid, key_type, message = verify_api_key(key)
+    
+    if not is_valid:
         return JSONResponse(status_code=401, content={"error": "Invalid API Key"})
     
-    aadhar_list = [re.sub(r'\D', '', a.strip()) for a in aadhars.split(",") if len(re.sub(r'\D', '', a.strip())) == 12]
+    if key_type == "demo" and not check_rate_limit(key):
+        return JSONResponse(status_code=429, content={"error": "Rate limit exceeded"})
+    
+    # Parse Aadhar numbers
+    aadhar_list = []
+    for a in aadhars.split(","):
+        clean = re.sub(r'\D', '', a.strip())
+        if len(clean) == 12:
+            aadhar_list.append(clean)
     
     if not aadhar_list:
         return JSONResponse(status_code=400, content={"error": "No valid Aadhar numbers"})
     
+    # Demo keys limited to 5 bulk searches
+    if key_type == "demo" and len(aadhar_list) > 5:
+        return JSONResponse(status_code=400, content={"error": "Demo keys limited to 5 Aadhar numbers per bulk request"})
+    
+    if len(aadhar_list) > 20:
+        return JSONResponse(status_code=400, content={"error": "Maximum 20 Aadhar numbers"})
+    
+    add_rate_limit(key)
+    
     results = []
-    for idx, aadhar in enumerate(aadhar_list):
+    for i, aadhar in enumerate(aadhar_list):
         try:
-            data = scrape_ration_by_aadhar(aadhar)
-            results.append(data)
+            result = scrape_ration_by_aadhar(aadhar, key_type)
+            results.append(result)
         except Exception as e:
-            results.append({"aadhar": aadhar, "error": str(e)})
-        if idx < len(aadhar_list) - 1:
+            results.append({"success": False, "aadhar": aadhar, "error": str(e)})
+        
+        if i < len(aadhar_list) - 1:
             time.sleep(delay)
+    
+    successful = sum(1 for r in results if r.get("success") or r.get("found"))
     
     return {
         "developer": "Abhay Singh",
+        "key_type": key_type,
         "total": len(results),
+        "successful": successful,
+        "failed": len(results) - successful,
         "results": results
     }
 
 @app.get("/keys/list")
-def list_keys(key: str = Query(..., description="Master API Key")):
-    if key != MASTER_API_KEY:
+async def list_keys(key: str = Query(..., description="Master API key")):
+    """List all available API keys (master keys only)"""
+    
+    if key not in MASTER_API_KEYS:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "Admin access required",
+                "message": "Use a master key to access this endpoint",
+                "master_keys": MASTER_API_KEYS
+            }
+        )
+    
+    return {
+        "developer": "Abhay Singh",
+        "total_premium_keys": len(VALID_API_KEYS),
+        "premium_keys": VALID_API_KEYS,
+        "total_master_keys": len(MASTER_API_KEYS),
+        "master_keys": MASTER_API_KEYS,
+        "demo_keys": DEMO_KEYS,
+        "all_keys_count": len(VALID_API_KEYS) + len(MASTER_API_KEYS) + len(DEMO_KEYS)
+    }
+
+@app.get("/keys/info")
+async def key_info(key: str = Query(..., description="Your API key")):
+    """Get information about your API key"""
+    
+    is_valid, key_type, message = verify_api_key(key)
+    
+    if not is_valid:
+        return JSONResponse(status_code=401, content={"error": "Invalid key", "key": key[:6] + "..."})
+    
+    info = get_key_info(key)
+    
+    return {
+        "key": key[:6] + "..." + key[-4:] if len(key) > 10 else key,
+        "is_valid": is_valid,
+        "key_type": key_type,
+        "permissions": info.get("permissions", []),
+        "rate_limit": info.get("limit", "unlimited"),
+        "developer": "Abhay Singh"
+    }
+
+@app.get("/keys/add")
+async def add_key(
+    new_key: str = Query(..., description="New API key to add"),
+    master_key: str = Query(..., description="Master API key for authentication")
+):
+    """Add a new API key (master keys only)"""
+    
+    if master_key not in MASTER_API_KEYS:
         return JSONResponse(status_code=403, content={"error": "Admin access required"})
-    return {"keys": VALID_API_KEYS, "demo_key": DEMO_KEY, "master_key": MASTER_API_KEY}
+    
+    if new_key in VALID_API_KEYS:
+        return JSONResponse(status_code=400, content={"error": "Key already exists"})
+    
+    VALID_API_KEYS.append(new_key)
+    
+    return {
+        "success": True,
+        "message": f"Key {new_key[:6]}... added successfully",
+        "total_keys": len(VALID_API_KEYS),
+        "developer": "Abhay Singh"
+    }
 
 @app.get("/health")
-def health():
-    return {"status": "active", "developer": "Abhay Singh", "version": "4.0", "timestamp": time.time()}
+async def health():
+    return {
+        "status": "active",
+        "developer": "Abhay Singh",
+        "version": "6.0",
+        "total_keys_configured": len(VALID_API_KEYS) + len(MASTER_API_KEYS) + len(DEMO_KEYS),
+        "timestamp": time.time()
+    }
 
 if __name__ == "__main__":
     import uvicorn
